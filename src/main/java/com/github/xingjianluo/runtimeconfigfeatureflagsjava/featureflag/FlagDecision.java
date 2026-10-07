@@ -8,6 +8,7 @@ package com.github.xingjianluo.runtimeconfigfeatureflagsjava.featureflag;
  * @param allowed     是否放行
  * @param bucket      标识落入的桶号 [0,100)；未知开关时为 -1
  * @param percentage  开关当前比例；未知开关时为 null
+ * @param version     判定依据的配置/开关快照版本号
  * @param reason      判定原因
  * @param explanation 可读说明
  */
@@ -16,6 +17,7 @@ public record FlagDecision(String flag,
                            boolean allowed,
                            int bucket,
                            Integer percentage,
+                           long version,
                            Reason reason,
                            String explanation) {
 

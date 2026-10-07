@@ -1,5 +1,7 @@
 package com.github.xingjianluo.runtimeconfigfeatureflagsjava.tests;
 
+import com.github.xingjianluo.runtimeconfigfeatureflagsjava.config.*;
+import com.github.xingjianluo.runtimeconfigfeatureflagsjava.config.source.InMemoryConfigSource;
 import com.github.xingjianluo.runtimeconfigfeatureflagsjava.featureflag.FeatureFlag;
 import com.github.xingjianluo.runtimeconfigfeatureflagsjava.featureflag.FeatureFlagService;
 import com.github.xingjianluo.runtimeconfigfeatureflagsjava.featureflag.FlagDecision;
@@ -7,20 +9,31 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.*;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** 验证灰度分流的一致性、可复现性与边界语义。 */
+/** 验证灰度分流的一致性、可复现性与边界语义（开关状态来自版本化配置快照）。 */
 class FeatureFlagServiceTest {
 
     private FeatureFlagService newService() {
-        FeatureFlagService service = new FeatureFlagService();
-        service.upsert(new FeatureFlag("new-checkout", true, 25));
-        service.upsert(new FeatureFlag("all-on", true, 100));
-        service.upsert(new FeatureFlag("all-off", true, 0));
-        service.upsert(new FeatureFlag("disabled-flag", false, 100));
-        return service;
+        ConfigRegistry registry = new ConfigRegistry();
+        InMemoryConfigSource overrides = new InMemoryConfigSource("overrides", 20);
+        InMemoryConfigSource base = new InMemoryConfigSource("base", 10);
+        base.setValues(Map.of(
+                "flag.new-checkout.enabled", "true",
+                "flag.new-checkout.percentage", "25",
+                "flag.all-on.enabled", "true",
+                "flag.all-on.percentage", "100",
+                "flag.all-off.enabled", "true",
+                "flag.all-off.percentage", "0",
+                "flag.disabled-flag.enabled", "false",
+                "flag.disabled-flag.percentage", "100"));
+        ConfigService configService = new ConfigService(new ConfigLoader(registry, List.of(base, overrides)),
+                overrides);
+        configService.init();
+        return new FeatureFlagService(configService);
     }
 
     @Test
@@ -45,6 +58,7 @@ class FeatureFlagServiceTest {
             assertEquals(first.allowed(), d.allowed(),
                     "同一标识在并发入口下结论必须一致: first=" + first + ", other=" + d);
             assertEquals(first.bucket(), d.bucket(), "桶号必须可复现: first=" + first + ", other=" + d);
+            assertEquals(first.version(), d.version(), "判定依据的版本号必须一致");
         }
         assertEquals(first.bucket() < 25, first.allowed(),
                 "放行结论必须等于 bucket(" + first.bucket() + ") < 25");
@@ -79,6 +93,7 @@ class FeatureFlagServiceTest {
         assertFalse(unknown.allowed(), "未知开关不得放行: " + unknown);
         assertEquals(FlagDecision.Reason.UNKNOWN_FLAG, unknown.reason(),
                 "未知开关必须显式标记 UNKNOWN_FLAG, 实际=" + unknown.reason());
+        assertNull(unknown.percentage(), "未知开关的比例应为 null");
         assertFalse(disabled.allowed(), "禁用开关不得放行: " + disabled);
         assertEquals(FlagDecision.Reason.FLAG_DISABLED, disabled.reason());
     }

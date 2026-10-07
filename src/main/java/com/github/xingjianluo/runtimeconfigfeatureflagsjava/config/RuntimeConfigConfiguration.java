@@ -2,7 +2,6 @@ package com.github.xingjianluo.runtimeconfigfeatureflagsjava.config;
 
 import com.github.xingjianluo.runtimeconfigfeatureflagsjava.config.source.InMemoryConfigSource;
 import com.github.xingjianluo.runtimeconfigfeatureflagsjava.config.source.PropertiesFileConfigSource;
-import com.github.xingjianluo.runtimeconfigfeatureflagsjava.featureflag.FeatureFlag;
 import com.github.xingjianluo.runtimeconfigfeatureflagsjava.featureflag.FeatureFlagService;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -61,11 +60,9 @@ public class RuntimeConfigConfiguration {
     }
 
     @Bean
-    public FeatureFlagService featureFlagService() {
-        FeatureFlagService service = new FeatureFlagService();
-        service.upsert(new FeatureFlag("new-checkout", true, 25));
-        service.upsert(new FeatureFlag("beta-search", true, 0));
-        service.upsert(new FeatureFlag("legacy-report", false, 100));
-        return service;
+    public FeatureFlagService featureFlagService(ConfigService configService) {
+        // 开关状态完全来自配置快照（flag.<name>.enabled/percentage 键），
+        // 初始开关由 runtime-config.properties 中的 flag.* 键播种
+        return new FeatureFlagService(configService);
     }
 }

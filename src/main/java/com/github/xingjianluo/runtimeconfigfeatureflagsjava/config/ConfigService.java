@@ -2,6 +2,7 @@ package com.github.xingjianluo.runtimeconfigfeatureflagsjava.config;
 
 import com.github.xingjianluo.runtimeconfigfeatureflagsjava.config.source.InMemoryConfigSource;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -57,27 +58,64 @@ public class ConfigService {
      * @param expectedVersion 期望的当前版本；非 null 且不匹配时拒绝（VERSION_CONFLICT）
      */
     public UpdateResult applyOverrides(Map<String, String> overrides, Long expectedVersion) {
+        return commit(overrides, Map.of(), expectedVersion);
+    }
+
+    /**
+     * 一次提交配置覆盖与开关变更，两者要么一起进入新版本，要么整体不变。
+     *
+     * <p>合并规则：配置覆盖键整体替换上一版本的配置覆盖；开关键
+     * （{@link ConfigLoader#FLAG_PREFIX} 前缀）在上一版本的基础上按
+     * {@code flagOverrides} 做增量合并，未涉及的开关原样保留。
+     *
+     * <p>拒绝规则：只有与本次提交直接相关的问题（来自运行时覆盖来源，
+     * 即本次提交的值本身非法）才会整体拒绝；其他来源里遗留的、与本次
+     * 提交无关的问题只记录在快照中，不阻塞合法提交。
+     *
+     * @param configOverrides 配置覆盖键值（不含开关键），整体替换
+     * @param flagOverrides   开关变更键值（flag.&lt;name&gt;.enabled/percentage），增量合并
+     * @param expectedVersion 期望的当前版本；非 null 且不匹配时拒绝（VERSION_CONFLICT）
+     */
+    public UpdateResult commit(Map<String, String> configOverrides, Map<String, String> flagOverrides,
+                               Long expectedVersion) {
         synchronized (updateLock) {
             ConfigSnapshot before = current.get();
             if (expectedVersion != null && expectedVersion != before.version()) {
                 return UpdateResult.rejected(UpdateResult.RejectionReason.VERSION_CONFLICT, List.of(),
                         "expected version " + expectedVersion + " but current is " + before.version());
             }
-            overrideSource.setValues(overrides);
+            Map<String, String> newOverrides = new LinkedHashMap<>(configOverrides);
+            // 开关键在提交间自动保留：先带上上一版本的开关覆盖，再应用本次变更
+            Map<String, String> previousOverrides = overridesByVersion.getOrDefault(before.version(), Map.of());
+            previousOverrides.forEach((k, v) -> {
+                if (k.startsWith(ConfigLoader.FLAG_PREFIX)) {
+                    newOverrides.putIfAbsent(k, v);
+                }
+            });
+            newOverrides.putAll(flagOverrides);
+            overrideSource.setValues(newOverrides);
+
             ConfigSnapshot candidate = loader.load(before.version() + 1);
-            if (!candidate.issues().isEmpty()) {
-                // 校验失败：恢复覆盖来源到旧状态，旧快照继续生效，绝不半生效
+            List<LoadIssue> blocking = candidate.issues().stream()
+                    .filter(i -> i.sourceName().equals(overrideSource.name()))
+                    .toList();
+            if (!blocking.isEmpty()) {
+                // 本次提交的值本身非法：整体拒绝，恢复覆盖来源，旧快照继续生效，绝不半生效
                 restoreOverridesOf(before);
-                return UpdateResult.rejected(UpdateResult.RejectionReason.VALIDATION_FAILED, candidate.issues(),
-                        "update rejected: " + candidate.issues().size() + " issue(s); previous version "
+                return UpdateResult.rejected(UpdateResult.RejectionReason.VALIDATION_FAILED, blocking,
+                        "commit rejected: " + blocking.size() + " issue(s) in submitted values; previous version "
                                 + before.version() + " remains active");
             }
+            // 其他来源遗留的问题不阻塞提交，但记录在结果与快照中保持可见
             current.set(candidate);
             history.put(candidate.version(), candidate);
-            overridesByVersion.put(candidate.version(), Map.copyOf(overrides));
-            return UpdateResult.ok(candidate.version(), List.of(),
-                    "applied " + overrides.size() + " override(s), version " + before.version()
-                            + " -> " + candidate.version());
+            overridesByVersion.put(candidate.version(), Map.copyOf(newOverrides));
+            return UpdateResult.ok(candidate.version(), candidate.issues(),
+                    "applied " + configOverrides.size() + " config override(s) and "
+                            + flagOverrides.size() + " flag change(s), version " + before.version()
+                            + " -> " + candidate.version()
+                            + (candidate.issues().isEmpty() ? ""
+                            : "; " + candidate.issues().size() + " pre-existing issue(s) recorded, not blocking"));
         }
     }
 
@@ -94,15 +132,18 @@ public class ConfigService {
             // 回滚通过恢复覆盖来源后重新装载完成，保证与正常更新走同一条校验路径
             restoreOverridesOf(target);
             ConfigSnapshot rolledBack = loader.load(before.version() + 1);
-            if (!rolledBack.issues().isEmpty()) {
+            List<LoadIssue> blocking = rolledBack.issues().stream()
+                    .filter(i -> i.sourceName().equals(overrideSource.name()))
+                    .toList();
+            if (!blocking.isEmpty()) {
                 restoreOverridesOf(before);
-                return UpdateResult.rejected(UpdateResult.RejectionReason.VALIDATION_FAILED, rolledBack.issues(),
+                return UpdateResult.rejected(UpdateResult.RejectionReason.VALIDATION_FAILED, blocking,
                         "rollback rejected; previous version " + before.version() + " remains active");
             }
             current.set(rolledBack);
             history.put(rolledBack.version(), rolledBack);
             overridesByVersion.put(rolledBack.version(), overridesByVersion.get(targetVersion));
-            return UpdateResult.ok(rolledBack.version(), List.of(),
+            return UpdateResult.ok(rolledBack.version(), rolledBack.issues(),
                     "rolled back to values of version " + targetVersion + ", version "
                             + before.version() + " -> " + rolledBack.version());
         }

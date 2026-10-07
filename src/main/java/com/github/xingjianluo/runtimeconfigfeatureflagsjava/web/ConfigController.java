@@ -2,6 +2,7 @@ package com.github.xingjianluo.runtimeconfigfeatureflagsjava.web;
 
 import com.github.xingjianluo.runtimeconfigfeatureflagsjava.config.ConfigService;
 import com.github.xingjianluo.runtimeconfigfeatureflagsjava.config.UpdateResult;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
@@ -27,14 +28,16 @@ public class ConfigController {
                 "issues", snapshot.issues());
     }
 
+    /** 提交配置覆盖（开关自动保留）；被拒绝时返回明确 4xx。 */
     @PostMapping("/overrides")
-    public UpdateResult applyOverrides(@RequestBody Map<String, String> overrides,
-                                       @RequestParam(required = false) Long expectedVersion) {
-        return configService.applyOverrides(overrides, expectedVersion);
+    public ResponseEntity<UpdateResult> applyOverrides(@RequestBody Map<String, String> overrides,
+                                                       @RequestParam(required = false) Long expectedVersion) {
+        return UpdateResponses.of(configService.applyOverrides(overrides, expectedVersion));
     }
 
+    /** 回滚到指定版本：配置与开关一起回到该版本当时的取值。 */
     @PostMapping("/rollback/{version}")
-    public UpdateResult rollback(@PathVariable long version) {
-        return configService.rollback(version);
+    public ResponseEntity<UpdateResult> rollback(@PathVariable long version) {
+        return UpdateResponses.of(configService.rollback(version));
     }
 }
