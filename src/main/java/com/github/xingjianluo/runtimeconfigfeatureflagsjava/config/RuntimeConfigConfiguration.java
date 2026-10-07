@@ -55,17 +55,17 @@ public class RuntimeConfigConfiguration {
 
     @Bean
     public ConfigService configService(ConfigLoader loader, InMemoryConfigSource overrideSource) {
-        ConfigService service = new ConfigService(loader, overrideSource);
+        ConfigService service = new ConfigService(loader, overrideSource, List.of(
+                new FeatureFlag("new-checkout", true, 25),
+                new FeatureFlag("beta-search", true, 0),
+                new FeatureFlag("legacy-report", false, 100)));
         service.init();
         return service;
     }
 
     @Bean
-    public FeatureFlagService featureFlagService() {
-        FeatureFlagService service = new FeatureFlagService();
-        service.upsert(new FeatureFlag("new-checkout", true, 25));
-        service.upsert(new FeatureFlag("beta-search", true, 0));
-        service.upsert(new FeatureFlag("legacy-report", false, 100));
-        return service;
+    public FeatureFlagService featureFlagService(ConfigService configService) {
+        // 绑定统一版本容器：开关定义与判定版本号均来自 ConfigService 的当前快照
+        return new FeatureFlagService(configService::state);
     }
 }

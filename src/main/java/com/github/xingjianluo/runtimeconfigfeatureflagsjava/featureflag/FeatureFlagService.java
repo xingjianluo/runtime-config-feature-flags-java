@@ -1,10 +1,13 @@
 package com.github.xingjianluo.runtimeconfigfeatureflagsjava.featureflag;
 
+import com.github.xingjianluo.runtimeconfigfeatureflagsjava.runtime.RuntimeSnapshot;
+
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 
 /**
  * 功能开关服务：基于稳定哈希的按比例灰度分流。
@@ -16,21 +19,69 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * 边界语义：percentage = 0 一律不放行，100 一律放行；
  * 未知开关一律不放行并显式给出 UNKNOWN_FLAG，绝不静默放行。
+ *
+ * 两种装配方式：
+ * <ul>
+ *   <li>绑定统一版本容器（{@link #FeatureFlagService(Supplier)}）：开关定义
+ *       与判定依据的版本号均来自 {@link RuntimeSnapshot}，配置/开关热更新时
+ *       判定只会看到某个完整版本；HTTP 入口与服务内部调用都委托
+ *       {@link #decide(String, String)}，因此同一标识两入口结论逐项一致。</li>
+ *   <li>独立模式（{@link #FeatureFlagService()}）：仅用于轻量单测，
+ *       {@link #upsert(FeatureFlag)} 直接写本地定义，结论不带版本号。</li>
+ * </ul>
  */
 public class FeatureFlagService {
 
     private final Map<String, FeatureFlag> flags = new ConcurrentHashMap<>();
+    private final Supplier<RuntimeSnapshot> snapshotSupplier;
 
+    /** 独立模式：开关定义经 {@link #upsert(FeatureFlag)} 直接维护。 */
+    public FeatureFlagService() {
+        this.snapshotSupplier = null;
+    }
+
+    /**
+     * 绑定模式：开关定义与版本号全部取自统一快照提供者。
+     * 绑定后不得再调用 {@link #upsert(FeatureFlag)}，开关变更必须经统一提交。
+     */
+    public FeatureFlagService(Supplier<RuntimeSnapshot> snapshotSupplier) {
+        this.snapshotSupplier = snapshotSupplier;
+    }
+
+    public boolean isBound() {
+        return snapshotSupplier != null;
+    }
+
+    /** 仅独立模式可用；绑定模式下必须经统一版本提交，禁止旁路写入。 */
     public void upsert(FeatureFlag flag) {
+        if (snapshotSupplier != null) {
+            throw new UnsupportedOperationException(
+                    "bound FeatureFlagService cannot upsert directly; submit through the unified runtime commit");
+        }
         flags.put(flag.name(), flag);
     }
 
     public FeatureFlag get(String name) {
+        if (snapshotSupplier != null) {
+            return snapshotSupplier.get().flag(name);
+        }
         return flags.get(name);
     }
 
     public FlagDecision decide(String flagName, String identifier) {
-        FeatureFlag flag = flags.get(flagName);
+        if (snapshotSupplier != null) {
+            RuntimeSnapshot snapshot = snapshotSupplier.get();
+            return decideAgainst(flagName, identifier, snapshot.flag(flagName))
+                    .withVersion(snapshot.version());
+        }
+        return decideAgainst(flagName, identifier, flags.get(flagName));
+    }
+
+    /**
+     * 对一份给定的开关定义执行判定。这是唯一的判定逻辑入口，
+     * 内部调用与 HTTP 入口、绑定模式与独立模式全部复用，保证结论一致。
+     */
+    private static FlagDecision decideAgainst(String flagName, String identifier, FeatureFlag flag) {
         if (flag == null) {
             return new FlagDecision(flagName, identifier, false, -1, null,
                     FlagDecision.Reason.UNKNOWN_FLAG,

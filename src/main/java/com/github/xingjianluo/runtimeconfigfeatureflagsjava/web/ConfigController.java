@@ -2,6 +2,8 @@ package com.github.xingjianluo.runtimeconfigfeatureflagsjava.web;
 
 import com.github.xingjianluo.runtimeconfigfeatureflagsjava.config.ConfigService;
 import com.github.xingjianluo.runtimeconfigfeatureflagsjava.config.UpdateResult;
+import com.github.xingjianluo.runtimeconfigfeatureflagsjava.runtime.web.RuntimeController;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
@@ -28,13 +30,15 @@ public class ConfigController {
     }
 
     @PostMapping("/overrides")
-    public UpdateResult applyOverrides(@RequestBody Map<String, String> overrides,
-                                       @RequestParam(required = false) Long expectedVersion) {
-        return configService.applyOverrides(overrides, expectedVersion);
+    public ResponseEntity<UpdateResult> applyOverrides(@RequestBody Map<String, String> overrides,
+                                                       @RequestParam(required = false) Long expectedVersion) {
+        UpdateResult result = configService.applyOverrides(overrides, expectedVersion);
+        return ResponseEntity.status(RuntimeController.httpStatusOf(result.reason())).body(result);
     }
 
     @PostMapping("/rollback/{version}")
-    public UpdateResult rollback(@PathVariable long version) {
-        return configService.rollback(version);
+    public ResponseEntity<UpdateResult> rollback(@PathVariable long version) {
+        UpdateResult result = configService.rollback(version);
+        return ResponseEntity.status(RuntimeController.httpStatusOf(result.reason())).body(result);
     }
 }
